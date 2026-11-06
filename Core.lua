@@ -197,6 +197,7 @@ function U.Command(input)
     elseif cmd == "help" then
         U.Print("/cz accept Полное Имя; /cz decline Полное Имя; /cz relay on|off Полное Имя; /cz trust sync — передать подтверждённые настройки.")
         U.Print("/cz — окно; /czu текст — общий чат; /cz link Имя Фамилия — связать гильдии; /cz sync; /cz status; /cz guildchat on|off.")
+        U.Print("/чз — синоним /cz; /cz текст и /чз текст — общий чат.")
     else U.SendChat(input) end
 end
 
@@ -238,6 +239,7 @@ f:SetScript("OnEvent", function(_, event, ...)
         U.UpdateIdentity()
         C_ChatInfo.RegisterAddonMessagePrefix(U.PREFIX)
         SLASH_CHILLZONEUNION1, SLASH_CHILLZONEUNION2 = "/cz", "/чиллзон"
+        SLASH_CHILLZONEUNION3 = "/чз"
         SlashCmdList.CHILLZONEUNION = U.Command
         SLASH_CHILLZONECHAT1 = "/czu"
         SlashCmdList.CHILLZONECHAT = function(s) U.SendChat(s) end

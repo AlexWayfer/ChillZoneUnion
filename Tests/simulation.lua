@@ -283,6 +283,43 @@ a.U.frame.scripts.OnEvent(a.U.frame, "CHAT_MSG_GUILD", { secret = true }, { secr
 eq(#b2.U.history, h, "secret native chat leaked")
 print("PASS native chat bridge and secret values")
 
+do
+    local function Slash(alias, text)
+        for name, handler in pairs(a2.E.SlashCmdList) do
+            local index = 1
+            while a2.E["SLASH_" .. name .. index] do
+                if a2.E["SLASH_" .. name .. index] == alias then return handler(text) end
+                index = index + 1
+            end
+        end
+        error("slash command not registered: " .. alias)
+    end
+    for _, alias in ipairs({ "/czu", "/cz", "/чз", "/чиллзон" }) do
+        local text = "Привет через " .. alias .. "!"
+        local localBefore, remoteBefore = #a2.U.history, #b2.U.history
+        Slash(alias, text); Step(8, true)
+        eq(#a2.U.history, localBefore + 1, alias .. " duplicated or lost local chat")
+        eq(#b2.U.history, remoteBefore + 1, alias .. " duplicated or lost remote chat")
+        eq(b2.U.history[#b2.U.history].text, text, alias .. " changed chat text")
+        eq(b2.U.history[#b2.U.history].name, a2.name, alias .. " changed chat author")
+    end
+    local toggle, toggles = a2.U.Toggle, 0
+    a2.U.Toggle = function() toggles = toggles + 1 end
+    for _, alias in ipairs({ "/cz", "/чз", "/чиллзон" }) do
+        local historyBefore = #a2.U.history
+        Slash(alias, ""); Slash(alias, "ui"); Slash(alias, "status")
+        eq(#a2.U.history, historyBefore, alias .. " sent a management command as chat")
+    end
+    eq(toggles, 6, "window aliases did not preserve empty/ui commands")
+    a2.U.Toggle = toggle
+    for key, alias in pairs(a2.E) do
+        if type(key) == "string" and key:match("^SLASH_CHILLZONE") then
+            expect(alias ~= "/g" and alias ~= "/г", "addon took over native guild chat")
+        end
+    end
+end
+print("PASS shared-chat slash aliases, management commands and native guild-chat ownership")
+
 SetRosters(1000)
 a.U.snapshotDue, b.U.snapshotDue = 0, 0
 Step(130, true)
