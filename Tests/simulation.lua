@@ -99,7 +99,18 @@ local function NewClient(name, guild, rank, savedDB)
     E.GuildLeave = function() protectedCalls = protectedCalls + 1 end
     E.GuildInvite = E.GuildLeave
     E.C_GuildInfo = { GuildRoster = function() end, Leave = E.GuildLeave, Invite = E.GuildLeave,
-        IsGuildOfficer = function() return c.rank <= 1 end }
+        IsGuildOfficer = function()
+            if c.officer ~= nil then return c.officer end
+            return c.rank <= 1
+        end,
+        GuildControlGetRankFlags = function(order)
+            assert(type(order) == "number" and order >= 1, "rank permissions require a one-based rank order")
+            local officer = order <= 2
+            for _, p in ipairs(clients) do
+                if p.guild == c.guild and p.rank == order - 1 and p.officer ~= nil then officer = p.officer end
+            end
+            return { [22] = officer }
+        end }
     E.GetNumGuildMembers = function() return #c.rows end
     E.GetGuildRosterInfo = function(i)
         local r = c.rows[i]
@@ -381,7 +392,7 @@ end
 
 local a3 = NewClient("Григорий Третий", 1, 1)
 SetRosters(1000); a3.U.frame.scripts.OnEvent(a3.U.frame, "PLAYER_LOGIN"); Step(30)
-expect(a3.U.Link(b2.name), "backup officer could not pair with approved counterpart before failover")
+expect(a3.U.CanRelay(), "backup officer was not automatically eligible")
 Step(25)
 a.live = false
 SetRosters(1000); Step(100)
@@ -840,10 +851,7 @@ local function UnionWorld(pairBackups)
     Step(5)
     expect(owner.U.Link(otherGM.name), "union owner could not establish ordinary guild link")
     Step(50)
-    if pairBackups then
-        expect(homeBackup.U.Link(otherGM.name) and remoteBackup.U.Link(owner.name), "native backup officers could not request their explicit counterpart pairing")
-        Step(35)
-    end
+    if pairBackups then Step(35) end
     for _, c in ipairs(clients) do expect(c.U.Connected(), "union transfer fixture not connected") end
     return owner, otherGM, member, homeBackup, remoteBackup
 end
@@ -1537,7 +1545,7 @@ do
     expect(not owner.U.IsUnionLeader(member.name, 2), "accepted addon version granted union owner role")
 
     local packed = owner.U.RowPack(otherGM.U.own[member.name])
-    eq(#owner.U.Unpack(packed), 7, "addon metadata changed legacy seven-field roster row wire format")
+    eq(#owner.U.Unpack(packed), 8, "roster row must carry native officer permission separately from addon metadata")
     local legacyRows = {}
     for _, row in pairs(otherGM.U.own) do legacyRows[#legacyRows + 1] = owner.U.RowPack(row) end
     expect(owner.U.TakeRoster({ 2, "legacy-roster", 1, 1, #legacyRows, owner.U.Pack(legacyRows) }, otherGM.name), "legacy roster snapshot no longer accepted alongside addon metadata")

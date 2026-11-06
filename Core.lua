@@ -1,6 +1,6 @@
 local _, U = ...
 ChillZoneUnion = U
-U.VERSION, U.PREFIX = "0.5.0-beta", "CZUnion2"
+U.VERSION, U.PREFIX = "0.6.0-beta", "CZUnion3"
 U.GUILDS = { "Чиллзон", "Чиллзон Навсегда" }
 U.GUILD_LEADERS = { [1] = "Вован Дубан" }
 U.UNION_LEADER = "Вован Дубан"
@@ -140,16 +140,26 @@ function U.CanInvite()
     local ok, allowed = pcall(fn)
     return ok and U.Public(allowed) and allowed == true
 end
+function U.RankIsOfficer(rank)
+    if not U.Public(rank) or type(rank) ~= "number" or rank < 0 or rank > 9 or rank ~= math.floor(rank) then return false end
+    if rank == 0 then return true end
+    -- Forever's OfficerCheckbox uses permission 22; roster ranks start at zero,
+    -- while GuildControlGetRankFlags takes a one-based order. Do not change the
+    -- guild-control UI selection or infer authority from names/invitation rights.
+    local fn = C_GuildInfo and C_GuildInfo.GuildControlGetRankFlags
+    if type(fn) ~= "function" then return false end
+    local ok, flags = pcall(fn, rank + 1)
+    if not ok or not U.Public(flags) or type(flags) ~= "table" then return false end
+    return U.Public(flags[22]) and flags[22] == true
+end
 function U.IsOfficer()
-    if not U.guild then return false end
-    if U.IsMaster() then return true end
+    local row = U.guild and U.own and U.own[U.me]
+    if not row or not U.RankIsOfficer(row.rank) then return false end
+    if row.rank == 0 then return true end
     local fn = C_GuildInfo and C_GuildInfo.IsGuildOfficer or IsGuildOfficer
-    if type(fn) == "function" then
-        local ok, allowed = pcall(fn)
-        if ok and U.Public(allowed) and allowed == true then return true end
-    end
-    local row = U.own and U.own[U.me]
-    return U.CanInvite() or (row and row.rank <= 1) or false
+    if type(fn) ~= "function" then return true end
+    local ok, allowed = pcall(fn)
+    return ok and U.Public(allowed) and allowed == true
 end
 function U.ChatLocked()
     if C_ChatInfo and C_ChatInfo.InChatMessagingLockdown then
@@ -178,9 +188,7 @@ function U.Command(input)
     elseif cmd == "accept" then U.AcceptLink(U.Name(rest))
     elseif cmd == "decline" then U.DeclineLink(U.Name(rest))
     elseif cmd == "relay" then
-        local mode, name = rest:match("^(%S+)%s+(.+)$")
-        if (mode ~= "on" and mode ~= "off") or not U.Name(name) then U.Print("/cz relay on|off Полное Имя") return end
-        U.AuthorizeRelay(name, mode == "on")
+        U.Print("Связные выбираются автоматически среди глав и офицеров с аддоном. Ручные назначения больше не используются.")
     elseif cmd == "trust" and rest == "sync" then U.ShareTrust()
     elseif cmd == "sync" then U.RequestRoster(); U.snapshotDue = 0; U.SayHello(); U.Print("Обновление состава запрошено.")
     elseif cmd == "status" then U.Print(U.Status())
@@ -195,7 +203,7 @@ function U.Command(input)
         U.db.bridgeGuildChat = rest == "on"
         U.Print("Передача вашего гильдейского чата: " .. (U.db.bridgeGuildChat and "включена" or "выключена"))
     elseif cmd == "help" then
-        U.Print("/cz accept Полное Имя; /cz decline Полное Имя; /cz relay on|off Полное Имя; /cz trust sync — передать подтверждённые настройки.")
+        U.Print("/cz accept Полное Имя; /cz decline Полное Имя — первое соединение гильдий. Связные выбираются автоматически среди глав и офицеров.")
         U.Print("/cz — окно; /czu текст — общий чат; /cz link Имя Фамилия — связать гильдии; /cz sync; /cz status; /cz guildchat on|off.")
     else U.SendChat(input) end
 end
@@ -206,6 +214,8 @@ f:RegisterEvent("ADDON_LOADED")
 f:RegisterEvent("PLAYER_LOGIN")
 f:RegisterEvent("PLAYER_GUILD_UPDATE")
 f:RegisterEvent("GUILD_ROSTER_UPDATE")
+f:RegisterEvent("GUILD_RANKS_UPDATE")
+f:RegisterEvent("GUILD_RANKS_UPDATE_ACTIVE_PLAYER")
 f:RegisterEvent("CHAT_MSG_ADDON")
 pcall(f.RegisterEvent, f, "CHAT_MSG_ADDON_LOGGED")
 f:RegisterEvent("CHAT_MSG_GUILD")
@@ -221,12 +231,12 @@ f:SetScript("OnEvent", function(_, event, ...)
         local key = realm .. ":" .. faction
         db.realms[key] = db.realms[key] or {}
         U.db = db.realms[key]
-        if U.db.trustSchema ~= 2 then
+        if U.db.trustSchema ~= 3 then
             local hadSavedState = next(U.db.contacts or {}) ~= nil or next(U.db.rosters or {}) ~= nil
             U.db.contacts, U.db.rosters, U.db.approvedRelays = {}, {}, {}
             U.db.tickets, U.db.announcement, U.db.addonPresence = {}, nil, {}
             U.db.setupContact, U.db.setupIntroSeen = nil, {}
-            U.db.trustSchema = 2
+            U.db.trustSchema = 3
             U.trustMigrated = hadSavedState
         end
         U.db.contacts = U.db.contacts or {}

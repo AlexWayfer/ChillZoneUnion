@@ -68,7 +68,9 @@ local function Plan(kind, fields, dist, target, priority, logged, fixedID, requi
     for i = 1, count do
         jobs[#jobs + 1] = { text = id .. "~" .. i .. "~" .. count .. "~" .. pieces[i],
             dist = dist, target = target, logged = logged, tries = 0,
-            priority = priority and 1 or 2, requiresGateway = requiresGateway, expiresAt = expiresAt, cancelKey = cancelKey }
+            priority = priority and 1 or 2, requiresGateway = requiresGateway, expiresAt = expiresAt, cancelKey = cancelKey,
+            requiresOfficer = dist == "WHISPER" and (kind == "PING" or kind == "PONG"
+                or kind == "LINK" and fields[2] ~= "error" and fields[2] ~= "wait") }
     end
     return jobs
 end
@@ -110,7 +112,8 @@ function U.Pump()
         q = #queues[1] > 0 and queues[1] or queues[2]
         job = q[1]
         if not job then return end
-        if (job.expiresAt and now > job.expiresAt) or (job.dist == "GUILD" and not U.guild) or (job.requiresGateway and not U.IsGateway()) then
+        if (job.expiresAt and now > job.expiresAt) or (job.dist == "GUILD" and not U.guild) or (job.requiresGateway and not U.IsGateway())
+            or (job.requiresOfficer and not U.CanRelay()) then
             table.remove(q, 1); U.queueStats.dropped = U.queueStats.dropped + 1
         else break end
     end

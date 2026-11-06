@@ -26,7 +26,7 @@ local function Count(rows)
 end
 local function Same(a, b)
     return a and b and a.rank == b.rank and a.rankName == b.rankName and a.level == b.level
-        and a.class == b.class and a.zone == b.zone and a.online == b.online
+        and a.class == b.class and a.zone == b.zone and a.online == b.online and a.officer == b.officer
 end
 local function Changes(before, after)
     local changes = { joined = {}, left = {}, online = {}, offline = {}, updated = {} }
@@ -111,7 +111,7 @@ function U.ReadRoster()
         rows[name] = { name = name, rankName = U.Text(rankName, 120) and rankName or "",
             rank = SafeNumber(rank, 99), level = SafeNumber(level, 0),
             zone = U.Text(zone, 180) and zone or "", online = online and true or false,
-            class = U.Text(class, 30) and class or "", guild = U.guild }
+            class = U.Text(class, 30) and class or "", guild = U.guild, officer = U.RankIsOfficer(rank) }
     end
     if not rows[U.me] then return Incomplete() end
     local before = U.own
@@ -125,15 +125,17 @@ function U.ReadRoster()
     return true
 end
 function U.RowPack(row)
-    return U.Pack({ row.name, row.rank, row.rankName, row.level, row.class, row.zone, row.online and "1" or "0" })
+    return U.Pack({ row.name, row.rank, row.rankName, row.level, row.class, row.zone, row.online and "1" or "0", row.officer and "1" or "0" })
 end
 function U.RowUnpack(raw, guild)
-    local f = U.Unpack(raw, 7)
-    if not f or #f ~= 7 then return nil end
+    local f = U.Unpack(raw, 8)
+    if not f or (#f ~= 7 and #f ~= 8) then return nil end
     local name, rank, level = U.Name(f[1]), Integer(f[2], 0, 99), Integer(f[4], 0, 100)
     if not name or not rank or not level then return nil end
     if #f[3] > 120 or #f[5] > 30 or #f[6] > 180 or (f[7] ~= "0" and f[7] ~= "1") then return nil end
-    return { name = name, rank = rank, rankName = f[3], level = level, class = f[5], zone = f[6], online = f[7] == "1", guild = guild }
+    if f[8] and f[8] ~= "0" and f[8] ~= "1" then return nil end
+    return { name = name, rank = rank, rankName = f[3], level = level, class = f[5], zone = f[6], online = f[7] == "1", guild = guild,
+        officer = rank == 0 or f[8] == "1" }
 end
 local function Context(target)
     if published and published.guild == U.guild and published.target == target and published.tenure == U.gatewaySince then return published end
@@ -208,7 +210,7 @@ function U.TakeRoster(fields, sender)
     cache = U.db.rosters[guild]
     if epoch and cache and cache.epoch == epoch and cache.source == sender and (cache.revision or 0) > revision then pending[guild] = nil return false end
     local before = cache and cache.rows
-    U.db.rosters[guild] = { rows = all, at = U.stamp(), fullAt = U.stamp(), source = sender, epoch = epoch, revision = revision }
+    U.db.rosters[guild] = { rows = all, at = U.stamp(), fullAt = U.stamp(), source = sender, epoch = epoch, revision = revision, verified = true }
     acceptedAt[guild], needsFull[guild], pending[guild], deltaPending[guild] = U.clock(), nil, nil, nil
     Announce(guild, before, all, p.initial)
     if U.LearnRosterContacts then U.LearnRosterContacts(guild, all) end
@@ -299,9 +301,10 @@ function U.TakeRosterDelta(fields, sender)
     if Count(all) ~= count then return AskFull(guild, sender, "count") end
     local before = cache.rows
     U.db.rosters[guild] = { rows = all, at = U.stamp(), fullAt = cache.fullAt or cache.at,
-        source = sender, epoch = epoch, revision = revision }
+        source = sender, epoch = epoch, revision = revision, verified = true }
     acceptedAt[guild], deltaPending[guild] = U.clock(), nil
     Announce(guild, before, all, p.initial)
+    if U.LearnRosterContacts then U.LearnRosterContacts(guild, all) end
     if U.Refresh then U.Refresh() end
     return true
 end
@@ -332,5 +335,7 @@ function U.RosterTick()
     end
 end
 U.On("GUILD_ROSTER_UPDATE", MarkDirty)
+U.On("GUILD_RANKS_UPDATE", MarkDirty)
+U.On("GUILD_RANKS_UPDATE_ACTIVE_PLAYER", MarkDirty)
 U.On("PLAYER_GUILD_UPDATE", MarkDirty)
 U.On("PLAYER_REGEN_ENABLED", MarkDirty)

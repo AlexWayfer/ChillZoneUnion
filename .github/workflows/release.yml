@@ -35,11 +35,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          staging="$(mktemp -d "$RUNNER_TEMP/chillzoneunion-tests.XXXXXX")"
-          ln -s "$GITHUB_WORKSPACE" "$staging/ChillZoneUnion"
-          cd "$staging"
-          lua5.1 ChillZoneUnion/Tests/simulation.lua
-          lua5.1 ChillZoneUnion/Tests/security.lua
+          sh ./tools/test.sh
 
   release:
     needs: tests

@@ -186,15 +186,6 @@ local function ContextAction(context, action)
     ChatFrame_OpenChat((action == "invite" and "/invite " or "/w ") .. context.name .. (action == "invite" and "" or " "))
     return true
 end
-local function ContextSetRelay(context, allowed)
-    local row = CurrentContextRow(context)
-    if not row or context.guild ~= U.guild or not U.IsTrustOfficer or not U.IsTrustOfficer()
-        or (tonumber(row.rank) or 0) <= 1 or not U.AuthorizeRelay then
-        U.CloseRosterContextMenu(); return false
-    end
-    U.CloseRosterContextMenu()
-    return U.AuthorizeRelay(context.name, allowed) == true
-end
 local function ContextEntries(context, row)
     local chat = ContextCanChat(row, context.guild) and true or false
     local entries = {
@@ -203,12 +194,6 @@ local function ContextEntries(context, row)
         { text = "Предложить переход", enabled = ContextCanTransfer(row, context.guild) and true or false,
             action = function() return ContextAction(context, "transfer") end },
     }
-    if context.guild == U.guild and U.IsTrustOfficer and U.IsTrustOfficer()
-        and (tonumber(row.rank) or 0) > 1 and U.CanRelay and U.AuthorizeRelay then
-        local approved = U.CanRelay(context.name) == true
-        entries[#entries + 1] = { text = approved and "Убрать из связных" or "Разрешить быть связным", enabled = true,
-            action = function() return ContextSetRelay(context, not approved) end }
-    end
     local info = RosterAddonInfo(row)
     if info.known == true then
         entries[#entries + 1] = { text = "ChillZoneUnion: " .. U.SafeDisplay(info.version or "версия неизвестна"), enabled = false }
@@ -525,9 +510,9 @@ local function RenderLinkApproval()
         controls.accept:SetScript("OnClick", function() ActOnLinkRequest(name, guild, untilAt, true) end)
         controls.decline:SetScript("OnClick", function() ActOnLinkRequest(name, guild, untilAt, false) end)
     elseif officer then
-        controls.info:SetText("Новых запросов подключения нет.\nКаждого нового связного проверяют и подтверждают отдельно, в том числе при работающей связи.")
+        controls.info:SetText("Новых запросов подключения нет.\nПосле первого подтверждения гильдий офицеры подключаются и сменяют друг друга автоматически.")
     else
-        controls.info:SetText("Новых связных разрешают глава и офицеры гильдии.\nСвязные получают доступ к обмену данными союза; назначайте только доверенных участников.")
+        controls.info:SetText("Связные выбираются автоматически среди глав и офицеров с аддоном.\nОбычные участники пользуются общим чатом и составом.")
     end
 end
 RenderLinks = function()
@@ -535,10 +520,9 @@ RenderLinks = function()
     local ready = U.guild and U.own[U.me] ~= nil
     if not U.guild then setupHint:SetText("Персонаж должен состоять в «Чиллзон» или «Чиллзон Навсегда».")
     elseif not ready then setupHint:SetText("Получаем состав и права вашей гильдии. Подождите несколько секунд.")
-    elseif not U.CanRelay or not U.CanRelay() then setupHint:SetText("Соединением управляют глава, офицеры и назначенные ими связные.\nОстальные участники пользуются общим чатом и составом без настройки связи.")
+    elseif not U.CanRelay or not U.CanRelay() then setupHint:SetText("Связными становятся только глава и персонажи с игровыми офицерскими правами.\nОстальные участники пользуются общим чатом и составом без настройки связи.")
     elseif U.ChatLocked() then setupHint:SetText("Игра временно ограничила обмен сообщениями. Соединение станет доступно после снятия ограничения.")
-    elseif not U.IsTrustOfficer() then setupHint:SetText("Вы назначены связным. Можно подключаться только к уже подтверждённым контактам второй гильдии.\nДля добавления нового контакта обратитесь к главе или офицеру.")
-    else setupHint:SetText("1. Введите полное имя офицера другой гильдии и нажмите «Подключить».\n2. Офицер на той стороне проверяет имя отправителя и разрешает запрос.\nКаждый новый связной подключается после подтверждения.") end
+    else setupHint:SetText("Первое соединение: введите полное имя главы или офицера другой гильдии и нажмите «Подключить».\nВторая сторона проверяет имя и разрешает запрос. Дальше связные выбираются и подключаются автоматически.") end
     Enable(contact, ready and U.CanRelay and U.CanRelay())
     local target = U.Name(contact:GetText() or "")
     Enable(connectButton, ready and target and U.CanStartLink and U.CanStartLink(target) and not U.ChatLocked())
@@ -770,7 +754,7 @@ Build = function()
     setupProgress = Label(l, "", 0, -187, 565); setupProgress:SetHeight(60); setupProgress:SetJustifyV("TOP")
     U.BuildLinkApprovalControls(l)
     diagnostics = Label(l, "", 0, -379, 565, "GameFontHighlightSmall"); diagnostics:SetHeight(55); diagnostics:SetJustifyV("TOP")
-    Label(l, "Для связи нужен доверенный связной с аддоном онлайн в каждой гильдии.\nОстальные участники читают чат и состав; аддон им тоже нужен.", 0, -443, 565, "GameFontHighlightSmall")
+    Label(l, "Для связи нужен глава или офицер с аддоном онлайн в каждой гильдии.\nСвязные выбираются автоматически; остальным участникам аддон тоже нужен.", 0, -443, 565, "GameFontHighlightSmall")
     Label(l, "Отображение", 610, 0, 335, "GameFontNormal")
     badgeCheck = CreateFrame("CheckButton", nil, l, "UICheckButtonTemplate"); badgeCheck:SetSize(24, 24); badgeCheck:SetPoint("TOPLEFT", 610, -33)
     Label(l, "Показывать гильдию рядом с именем в чате", 638, -40, 307, "GameFontHighlightSmall")
