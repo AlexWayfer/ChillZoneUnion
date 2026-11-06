@@ -1,0 +1,21 @@
+## Interface: 16001, 16002, 16003, 16004, 16005, 16010, 16100
+## Title: Чиллзон — Союз гильдий
+## Notes: Общий чат, состав и согласованные переходы между Чиллзон и Чиллзон Навсегда.
+## Author: Petukhov A.V.
+## Version: 0.4.6-beta
+## IconTexture: Interface\AddOns\ChillZoneUnion\Media\minimap
+## SavedVariables: ChillZoneUnionDB
+
+Libs\LibStub.lua
+Libs\LibDeflate.lua
+Core.lua
+Chat.lua
+Protocol.lua
+Roster.lua
+Network.lua
+Transfers.lua
+Union.lua
+Stats.lua
+Presence.lua
+UI.lua
+Bindings.xml

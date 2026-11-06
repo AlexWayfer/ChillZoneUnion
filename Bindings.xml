@@ -1,0 +1,5 @@
+<Bindings>
+    <Binding name="CHILLZONEUNION_ROSTER" header="CHILLZONEUNION">
+        if ChillZoneUnion and ChillZoneUnion.OpenRoster then ChillZoneUnion.OpenRoster() end
+    </Binding>
+</Bindings>
