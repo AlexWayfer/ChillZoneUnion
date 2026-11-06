@@ -193,6 +193,15 @@ local function NewClient(name, guild, rank, savedDB)
     end
     c.U, c.E = U, E
     U.frame.scripts.OnEvent(U.frame, "ADDON_LOADED", "ChillZoneUnion")
+    -- Fixture consent follows only an intentional successful Link call to the
+    -- exact receiving test character. Raw unsolicited LINK packets get none.
+    local startLink = U.Link
+    c.requestedLinks = {}
+    U.Link = function(target)
+        local result = startLink(target)
+        if result then c.requestedLinks[U.Fold(U.Name(target) or "")] = true end
+        return result
+    end
     return c
 end
 local function SetRosters(extra)
@@ -210,6 +219,14 @@ end
 local function Step(seconds, duplicate)
     for i = 1, math.ceil(seconds * 10) do
         time = time + 0.1
+        for _, requester in ipairs(clients) do
+            if requester.live then for _, receiver in ipairs(clients) do
+                if receiver.live and requester.requestedLinks[receiver.U.Fold(receiver.name)]
+                    and receiver.U.inboundLinks[requester.name] and receiver.U.AcceptLink(requester.name) then
+                    requester.requestedLinks[receiver.U.Fold(receiver.name)] = nil
+                end
+            end end
+        end
         for _, c in ipairs(clients) do if c.live then c.U.frame.scripts.OnUpdate(c.U.frame, 0.1) end end
         local batch = wire; wire = {}
         for _, p in ipairs(batch) do
@@ -231,16 +248,17 @@ local b2 = NewClient("Василий Второй", 2, 1)
 SetRosters(0)
 for _, c in ipairs(clients) do c.U.frame.scripts.OnEvent(c.U.frame, "PLAYER_LOGIN") end
 Step(5)
-eq(a.U.GatewayName(), a.name, "source election")
-eq(b.U.GatewayName(), b.name, "destination election")
+expect(a.U.GatewayName() == nil and b.U.GatewayName() == nil, "unpaired officers became active union gateways")
 expect(not a2.U.Link(b.name), "ordinary member initiated guild setup")
 expect(a.U.Link(b2.name), "guild master could not start setup")
 Step(50, true)
+eq(a.U.GatewayName(), a.name, "paired source election")
+eq(b.U.GatewayName(), b2.name, "explicitly selected paired officer was not destination gateway")
 expect(a.U.Connected() and b.U.Connected(), "link not established")
 expect(a2.U.Connected() and b2.U.Connected(), "guildmates did not learn the link")
 eq(Count(a2.U.db.rosters[2].rows), 2, "remote roster not shared")
 eq(Count(b2.U.db.rosters[1].rows), 2, "reverse roster not shared")
-print("PASS one-click GM-to-officer handshake, no target confirmation, two-way roster")
+print("PASS explicit receiving-officer approval, full-name handshake and two-way roster")
 
 local before = #b2.U.history
 a2.U.SendChat("Привет двум гильдиям! |Hitem:123|h[Предмет]|h"); Step(8, true)
@@ -363,6 +381,8 @@ end
 
 local a3 = NewClient("Григорий Третий", 1, 1)
 SetRosters(1000); a3.U.frame.scripts.OnEvent(a3.U.frame, "PLAYER_LOGIN"); Step(30)
+expect(a3.U.Link(b2.name), "backup officer could not pair with approved counterpart before failover")
+Step(25)
 a.live = false
 SetRosters(1000); Step(100)
 eq(a3.U.GatewayName(), a3.name, "new source bridge not elected")
@@ -419,7 +439,7 @@ do
     Step(55, true)
     expect(gm.U.Connected() and otherGM.U.Connected(), "simultaneous setup requests stalled")
 end
-print("PASS simultaneous one-click setup")
+print("PASS simultaneous setup with explicit receiving-officer approval")
 do
     local gm, ordinary = FreshPair()
     ordinary.rank = 2; SetRosters(0)
@@ -432,7 +452,7 @@ print("PASS officer requirement and visible setup error")
 do
     local gm, officer = FreshPair()
     expect(gm.U.Link("Нет Такого"), "offline-target setup was not started")
-    Step(85)
+    Step(190)
     expect(not gm.U.Connected(), "offline target connected")
     eq(gm.U.SetupState().state, "error", "offline-target timeout not visible")
 end
@@ -457,12 +477,14 @@ print("PASS case-insensitive officer name")
 do
     clients, wire, deliveryFilter = {}, {}, nil
     time = time + 100
-    local member = NewClient("Аарон Участник", 1, 2)
+    local member = NewClient("Аарон Офицер", 1, 1)
     local gm = NewClient("Борис Глава", 1, 0)
     local officer = NewClient("Виктор Офицер", 2, 1)
     SetRosters(0)
     for _, c in ipairs(clients) do c.U.frame.scripts.OnEvent(c.U.frame, "PLAYER_LOGIN") end
     Step(5)
+    expect(member.U.Link(officer.name), "native officer could not establish separate source relay")
+    Step(55)
     eq(gm.U.GatewayName(), member.name, "test setup did not select separate source gateway")
     expect(gm.U.Link(officer.name), "non-gateway guild master could not start setup")
     Step(55)
@@ -471,11 +493,10 @@ end
 print("PASS setup by guild master who is not the gateway")
 do
     local gm, officer = FreshPair()
-    local oldOwn = gm.U.own
+    expect(gm.U.Link(officer.name), "delayed native-roster fixture could not establish approved transport")
+    Step(50)
     gm.U.own = {}; gm.rows[1].secret = true
     -- Established transport is not proof that the first complete native roster is ready.
-    gm.U.AddContact(officer.name, 2); officer.U.AddContact(gm.name, 1)
-    gm.U.remote = { name = officer.name, at = time }
     gm.U.snapshotDue, gm.U.lastSnapshot = 0, nil
     for i = 1, 8 do
         gm.U.frame.scripts.OnEvent(gm.U.frame, "GUILD_ROSTER_UPDATE")
@@ -526,7 +547,10 @@ local function Kind(p)
         local compressed = D:DecodeForWoWAddonChannel(encoded:sub(2))
         raw = compressed and D:DecompressDeflate(compressed)
     end
-    return raw and raw:match("^([A-Z]+)~")
+    if raw then
+        local kind, payload = raw:match("^([A-Z]+)~(.*)$")
+        return kind, payload and p.from.U.Unpack(payload)
+    end
 end
 do
     local gm, officer = LinkedPair()
@@ -653,7 +677,9 @@ do
     local priorFull = officer.U.db.rosters[1].fullAt
     local dropped = 0
     deliveryFilter = function(p, recipient)
-        if p.from == gm and recipient == officer and p.dist == "WHISPER" and Kind(p) == "DELTA" and dropped == 0 then dropped = 1; return false end
+        local kind, fields = Kind(p)
+        local changed = fields and (fields[7] ~= "" or fields[8] ~= "")
+        if p.from == gm and recipient == officer and p.dist == "WHISPER" and kind == "DELTA" and changed and dropped == 0 then dropped = 1; return false end
         return true
     end
     gm.rows[1].level = 51; gm.U.frame.scripts.OnEvent(gm.U.frame, "GUILD_ROSTER_UPDATE")
@@ -801,7 +827,7 @@ for _, rank in ipairs({ 0, 1, 2 }) do
 end
 print("PASS custom minimap button for every rank, fresh members, settings, drag scale and click suppression")
 
-local function UnionWorld()
+local function UnionWorld(pairBackups)
     clients, wire, deliveryFilter = {}, {}, nil
     time = time + 100
     local owner = NewClient("Вован Дубан", 1, 0)
@@ -814,6 +840,10 @@ local function UnionWorld()
     Step(5)
     expect(owner.U.Link(otherGM.name), "union owner could not establish ordinary guild link")
     Step(50)
+    if pairBackups then
+        expect(homeBackup.U.Link(otherGM.name) and remoteBackup.U.Link(owner.name), "native backup officers could not request their explicit counterpart pairing")
+        Step(35)
+    end
     for _, c in ipairs(clients) do expect(c.U.Connected(), "union transfer fixture not connected") end
     return owner, otherGM, member, homeBackup, remoteBackup
 end
@@ -936,7 +966,7 @@ end
 print("PASS reverse transfer native rank, cache age, addon presence, sender and immutable ticket identity validation")
 
 do
-    local owner, otherGM, member, homeBackup = UnionWorld()
+    local owner, otherGM, member, homeBackup = UnionWorld(true)
     local dropped = 0
     deliveryFilter = function(p)
         if p.dist == "WHISPER" and p.from == owner and Kind(p) == "UTICKET" then dropped = dropped + 1; return false end
@@ -1020,7 +1050,7 @@ do
     for _, linked in ipairs({ "contact", "connected" }) do
         local c = SetupClient()
         SetRosters(0)
-        if linked == "contact" then c.U.db.contacts["Борис Навсегда"] = { guild = 2, at = c.U.stamp(), addon = true }
+        if linked == "contact" then expect(c.U.ApproveContact("Борис Навсегда", 2, false), "intentional setup fixture could not approve its saved peer")
         else c.U.Connected = function() return true end end
         c.U.frame.scripts.OnEvent(c.U.frame, "PLAYER_LOGIN")
         c.U.minimapButton.scripts.OnUpdate(c.U.minimapButton, 2.1)
@@ -1308,7 +1338,7 @@ local function HelloPresence(c, name, version)
     c.U.Handle("HELLO", { c.guild, version, c.U.Pack({}), "", "", 0 }, "GUILD", name, c.U.NewID())
 end
 do
-    local owner, otherGM, member, homeBackup = UnionWorld()
+    local owner, otherGM, member, homeBackup = UnionWorld(true)
     Step(8)
     for _, c in ipairs(clients) do
         local self = c.U.AddonInfo(c.name, c.guild)
@@ -1428,11 +1458,19 @@ do
     Step(8)
     local newcomer = NewClient("Яна Новая", 1, 2)
     expect(not newcomer.U.db.rosters[2], "late-join metadata fixture unexpectedly has a remote roster")
+    local presenceTrace, takePresence = {}, newcomer.U.PresenceMessage
+    newcomer.U.PresenceMessage = function(kind, fields, sender, remote)
+        local accepted = takePresence(kind, fields, sender, remote)
+        if kind == "ADDONS" then presenceTrace[#presenceTrace + 1] = tostring(fields[1]) .. ":" .. tostring(remote) .. ":roster=" .. tostring(newcomer.U.db.rosters[2] ~= nil) .. ":ok=" .. tostring(accepted)
+            .. ":src=" .. tostring(sender) .. ":expected=" .. tostring(newcomer.U.linkState and newcomer.U.linkState.name) .. ":trust=" .. tostring(newcomer.U.TrustedPeer(sender)) .. ":mode=" .. tostring(fields[4]) .. ":rev=" .. tostring(fields[3]) end
+        return accepted
+    end
     SetRosters(0); newcomer.U.frame.scripts.OnEvent(newcomer.U.frame, "PLAYER_LOGIN")
     Step(60)
     expect(newcomer.U.db.rosters[2] and newcomer.U.db.rosters[2].rows[member.name], "new ordinary member did not receive foreign roster")
     local info = newcomer.U.AddonInfo(member.name, 2)
-    expect(info.known and info.live and info.version == member.U.VERSION, "late-join metadata replay was lost before foreign roster arrived")
+    expect(info.known and info.live and info.version == member.U.VERSION, "late-join metadata replay was lost before foreign roster arrived: known=" .. tostring(info.known)
+        .. " live=" .. tostring(info.live) .. " version=" .. tostring(info.version) .. " connected=" .. tostring(newcomer.U.Connected()) .. " fresh=" .. tostring(newcomer.U.RosterFresh(2)) .. " trace=" .. table.concat(presenceTrace, ","))
 end
 print("PASS late ordinary installation receives current foreign addon metadata after initial roster synchronization")
 do
@@ -1453,7 +1491,10 @@ do
     expect(not Take(Fields(1), remoteBackup.name), "noncurrent remote gateway supplied addon snapshot")
     local own = Fields(1); own[1] = 1; own[9] = owner.U.Pack({ Record(homeBackup.name) })
     expect(not Take(own, homeBackup.name, false), "ordinary own guild member impersonated addon snapshot publisher")
-    expect(not Take(Fields(1, { Record("Посторонний Игрок") })), "presence snapshot accepted a character outside verified guild roster")
+    local versionBeforeUnknown = owner.U.AddonInfo(member.name, 2).version
+    Take(Fields(1, { Record("Посторонний Игрок") }, 1, 1, "F", 0, "8999.1"))
+    expect(not owner.U.AddonInfo("Посторонний Игрок", 2).known and not owner.U.db.addonPresence[2]["Посторонний Игрок"], "deferred presence metadata applied before verifying character membership")
+    eq(owner.U.AddonInfo(member.name, 2).version, versionBeforeUnknown, "unknown member batch changed accepted addon metadata")
     for _, version in ipairs({ "bad|Hitem:1|h", "bad version", string.rep("a", 41), "" }) do
         local raw = owner.U.Pack({ member.name, version, "1", owner.U.stamp() })
         expect(not Take(Fields(1, { raw })), "presence snapshot accepted malformed addon version")
@@ -1474,7 +1515,8 @@ do
     expect(Take(Fields(2, { Record(nil, "0.4.4-b") }, 1, 3)), "first partial snapshot page rejected")
     eq(owner.U.AddonInfo(member.name, 2).version, "0.4.4-a", "partial snapshot became visible before atomic completion")
     expect(Take(Fields(2, { Record(otherGM.name) }, 2, 3)), "second partial snapshot page rejected")
-    expect(not Take(Fields(2, { Record("Посторонний Игрок") }, 3, 3)), "malformed final snapshot page was accepted")
+    Take(Fields(2, { Record("Посторонний Игрок") }, 3, 3))
+    expect(not owner.U.db.addonPresence[2]["Посторонний Игрок"], "multipart presence wrote unknown member metadata before roster verification")
     eq(owner.U.AddonInfo(member.name, 2).version, "0.4.4-a", "failed multipart snapshot changed accepted metadata")
     expect(Take(Fields(3, { Record(otherGM.name) }, 2, 3)), "out-of-order second snapshot page rejected")
     expect(Take(Fields(3, { Record(remoteBackup.name) }, 3, 3)), "out-of-order third snapshot page rejected")

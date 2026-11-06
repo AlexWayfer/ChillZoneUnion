@@ -110,33 +110,52 @@ local function Current(guild, source, remote)
     if remote then return guild ~= U.guild and source == ExpectedRemote() and U.TrustedPeer(source) == guild end
     return guild == U.guild and U.own[source] ~= nil and source == U.GatewayName()
 end
-local function Apply(batch)
+local function Admissible(batch)
     if not Current(batch.guild, batch.source, batch.remote) then return false end
-    local roster = Roster(batch.guild)
-    if not roster then return false end
     local previous = contexts[batch.guild]
     if previous and previous.source == batch.source then
         if previous.retired[batch.epoch] then return false end
         if previous.epoch == batch.epoch and batch.revision <= previous.revision then return false end
         if previous.epoch ~= batch.epoch and (batch.mode ~= "F" or batch.at < previous.at) then return false end
     end
+    return true, previous
+end
+local function Apply(batch)
+    local admissible, previous = Admissible(batch)
+    if not admissible then return false end
     if batch.mode == "D" and (not previous or previous.source ~= batch.source or previous.epoch ~= batch.epoch or previous.revision ~= batch.base) then return false end
-    local records, seen, total = {}, {}, 0
-    if batch.mode == "D" then
-        for name, record in pairs(previous.records) do if roster[name] then records[name] = record; total = total + 1 end end
-    end
+    -- A current, approved publisher may replay metadata before its roster arrives.
+    -- Validate the whole message first; neither history nor contexts is changed
+    -- until every name can be checked against that source's complete roster.
+    local parsed, total = {}, 0
     for part = 1, batch.pages do
         for _, packed in ipairs(batch.parts[part]) do
             local f = U.Unpack(packed, 4)
             local name = f and #f == 4 and U.Name(f[1])
             local version = f and Version(f[2])
             local at = f and Integer(f[4], 0, batch.at)
-            if not name or not roster[name] or not version or not at or (f[3] ~= "0" and f[3] ~= "1") or seen[name] then return false end
-            seen[name] = true
-            if not records[name] then total = total + 1 end
+            if not name or not version or not at or (f[3] ~= "0" and f[3] ~= "1") or parsed[name] then return false end
+            total = total + 1
             if total > LIMIT then return false end
-            records[name] = { version = version, live = f[3] == "1", lastSeen = at }
+            parsed[name] = { version = version, live = f[3] == "1", lastSeen = at }
         end
+    end
+    local roster = Roster(batch.guild)
+    if batch.guild ~= U.guild then
+        local cache = U.db.rosters[batch.guild]
+        if not cache or cache.source ~= batch.source then roster = nil end
+    end
+    if not roster then return nil end -- bounded pending batch, waiting for roster
+    for name in pairs(parsed) do if not roster[name] then return nil end end
+    local records = {}
+    total = 0
+    if batch.mode == "D" then
+        for name, record in pairs(previous.records) do if roster[name] then records[name] = record; total = total + 1 end end
+    end
+    for name, record in pairs(parsed) do
+        if not records[name] then total = total + 1 end
+        if total > LIMIT then return false end
+        records[name] = record
     end
     local retired = previous and previous.source == batch.source and previous.retired or {}
     if previous and previous.source == batch.source and previous.epoch ~= batch.epoch then
@@ -159,12 +178,11 @@ function U.PresenceMessage(kind, f, sender, remote)
     local at, rows = Integer(f[8], 0, U.stamp() + 60), U.Unpack(f[9], PAGE)
     if not rev or not base or not part or not count or part > count or not at or not rows or (f[4] ~= "F" and f[4] ~= "D") then return false end
     if f[4] == "F" and base ~= 0 or f[4] == "D" and base >= rev then return false end
-    local roster, seen = Roster(guild), {}
-    if not roster then return false end
+    local seen = {}
     for _, packed in ipairs(rows) do
         local row = U.Unpack(packed, 4)
         local name = row and #row == 4 and U.Name(row[1])
-        if not name or not roster[name] or not Version(row[2]) or (row[3] ~= "0" and row[3] ~= "1")
+        if not name or not Version(row[2]) or (row[3] ~= "0" and row[3] ~= "1")
             or not Integer(row[4], 0, at) or seen[name] then return false end
         seen[name] = true
     end
@@ -176,7 +194,7 @@ function U.PresenceMessage(kind, f, sender, remote)
         local n = 0; for _ in pairs(pending) do n = n + 1 end
         if n >= 6 then return false end
         batch = { guild = guild, source = sender, remote = remote, epoch = f[2], revision = rev, mode = f[4], base = base,
-            pages = count, at = at, started = U.clock(), parts = {}, raw = {}, n = 0 }
+            pages = count, at = at, started = U.clock(), parts = {}, raw = {}, n = 0, rowCount = 0 }
         pending[key] = batch
     end
     if batch.pages ~= count or batch.mode ~= f[4] or batch.base ~= base or batch.at ~= at then pending[key] = nil return false end
@@ -184,9 +202,32 @@ function U.PresenceMessage(kind, f, sender, remote)
         if batch.raw[part] ~= f[9] then pending[key] = nil return false end
         return true
     end
+    if batch.rowCount + #rows > LIMIT then pending[key] = nil; return false end
     batch.parts[part], batch.raw[part], batch.n = rows, f[9], batch.n + 1
-    if batch.n == batch.pages then pending[key] = nil; return Apply(batch) end
+    batch.rowCount = batch.rowCount + #rows
+    if batch.n == batch.pages then
+        local applied = Apply(batch)
+        if applied ~= nil then pending[key] = nil end
+        return applied ~= false
+    end
     return true
+end
+local function RetryPending()
+    local complete = {}
+    for key, batch in pairs(pending) do
+        if batch.n == batch.pages then complete[#complete + 1] = { key = key, batch = batch } end
+    end
+    table.sort(complete, function(a, b)
+        local first, second = a.batch, b.batch
+        if first.guild ~= second.guild then return first.guild < second.guild end
+        if first.source ~= second.source then return first.source < second.source end
+        if first.epoch == second.epoch then return first.revision < second.revision end
+        if first.at ~= second.at then return first.at < second.at end
+        return first.epoch < second.epoch
+    end)
+    for _, entry in ipairs(complete) do
+        if pending[entry.key] == entry.batch and Apply(entry.batch) ~= nil then pending[entry.key] = nil end
+    end
 end
 local function Prune()
     for guild = 1, 2 do
@@ -200,13 +241,16 @@ local function Prune()
         end
     end
     if U.own[U.me] then for name in pairs(observed) do if not U.own[name] then observed[name] = nil end end end
-    for key, batch in pairs(pending) do if U.clock() - batch.started > 90 then pending[key] = nil end end
+    for key, batch in pairs(pending) do
+        if U.clock() - batch.started > 90 or not Admissible(batch) then pending[key] = nil end
+    end
 end
 function U.PresenceTick()
     if not U.db or not U.guild or U.clock() < nextScan then return end
     nextScan = U.clock() + 2
     if U.own[U.me] then U.PresenceHello(U.me, U.VERSION) end
     Prune()
+    RetryPending()
     local gateway, connected, source = U.IsGateway(), U.Connected(), ExpectedRemote()
     local remote = contexts[U.OtherGuild()]
     if remote and (not connected or remote.source ~= source) then remote.active = false end

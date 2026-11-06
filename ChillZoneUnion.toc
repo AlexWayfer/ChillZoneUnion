@@ -2,7 +2,7 @@
 ## Title: Чиллзон — Союз гильдий
 ## Notes: Общий чат, состав и согласованные переходы между Чиллзон и Чиллзон Навсегда.
 ## Author: Petukhov A.V.
-## Version: 0.4.6-beta
+## Version: 0.5.0-beta
 ## IconTexture: Interface\AddOns\ChillZoneUnion\Media\minimap
 ## SavedVariables: ChillZoneUnionDB
 

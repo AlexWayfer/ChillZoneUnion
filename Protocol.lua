@@ -1,7 +1,7 @@
 local _, U = ...
-local D = LibStub and LibStub("LibDeflate", true)
--- LibDeflate also supports standalone loading, without LibStub.
-if not D and _G.LibDeflate then D = _G.LibDeflate end
+-- The bundled decoder is private so another addon's shared library cannot
+-- replace the output-bound enforcement used for incoming protocol data.
+local D = U.Deflate
 U.Deflate = D
 
 function U.Pack(fields)
@@ -130,6 +130,16 @@ function U.Pump()
 end
 function U.Receive(prefix, message, distribution, sender)
     if not U.Public(prefix) or prefix ~= U.PREFIX or not U.Text(message, 255) or not U.Text(distribution, 16) then return end
+    if not U.Text(sender, 160) then return end
+    local senderRealm = sender:match("%-([^%-]+)$")
+    if senderRealm then
+        local normalized = GetNormalizedRealmName and GetNormalizedRealmName()
+        local display = GetRealmName and GetRealmName()
+        local suffix = U.Fold(senderRealm):gsub("%s", "")
+        local sameNormalized = U.Text(normalized, 100) and suffix == U.Fold(normalized):gsub("%s", "")
+        local sameDisplay = U.Text(display, 100) and suffix == U.Fold(display):gsub("%s", "")
+        if not sameNormalized and not sameDisplay then return end
+    end
     sender = U.Name(sender)
     if not sender or sender == U.me or (distribution ~= "GUILD" and distribution ~= "WHISPER") then return end
     -- Unknown whispers can carry only a tiny connection handshake. Never decompress them.
@@ -138,7 +148,9 @@ function U.Receive(prefix, message, distribution, sender)
     local id, part, total, data = message:match("^([%d%.]+)~(%d+)~(%d+)~(.*)$")
     part, total = tonumber(part), tonumber(total)
     if not id or #id > 40 or not part or total < 1 or total > 54 or part < 1 or part > total then return end
-    if not trusted and (total ~= 1 or data:sub(1, 6) ~= "RLINK~") then return end
+    local transferReady = distribution == "WHISPER" and U.TrustedTransferPeer
+        and U.TrustedTransferPeer(sender) and total == 1 and data:sub(1, 7) == "RREADY~"
+    if not trusted and not transferReady and (total ~= 1 or data:sub(1, 6) ~= "RLINK~") then return end
     local rate = perSender[sender]
     if not rate or U.clock() - rate.at > 10 then rate = { at = U.clock(), n = 0 }; perSender[sender] = rate end
     rate.n = rate.n + 1
@@ -149,19 +161,22 @@ function U.Receive(prefix, message, distribution, sender)
     if not b then
         local n = 0; for _ in pairs(buffers) do n = n + 1 end
         if n >= 80 then return end
-        b = { at = U.clock(), total = total, n = 0, parts = {} }; buffers[key] = b
+        b = { at = U.clock(), total = total, n = 0, bytes = 0, parts = {} }; buffers[key] = b
     end
     if b.total ~= total then buffers[key] = nil return end
-    if not b.parts[part] then b.parts[part] = data; b.n = b.n + 1 end
+    if not b.parts[part] then
+        if b.bytes + #data > 10000 then buffers[key] = nil; return end
+        b.parts[part] = data; b.n = b.n + 1; b.bytes = b.bytes + #data
+    end
     if b.n ~= total then return end
     buffers[key] = nil; seen[key] = U.clock()
     local encoded = table.concat(b.parts)
     if #encoded > 10000 then return end
     local raw
     if encoded:sub(1, 1) == "R" then raw = encoded:sub(2)
-    elseif trusted and D and encoded:sub(1, 1) == "Z" then
+    elseif trusted and D and type(D.DecompressDeflateLimited) == "function" and encoded:sub(1, 1) == "Z" then
         local zipped = D:DecodeForWoWAddonChannel(encoded:sub(2))
-        if zipped then raw = D:DecompressDeflate(zipped) end
+        if zipped then raw = D:DecompressDeflateLimited(zipped, 25000) end
     end
     if not U.Text(raw, 25000) then return end
     local kind, payload = raw:match("^([A-Z]+)~(.*)$")

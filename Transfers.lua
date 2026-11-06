@@ -9,7 +9,8 @@ local function ValidTicket(t)
 end
 function U.TransferPeer(name)
     for _, t in pairs(U.Tickets()) do
-        if ValidTicket(t) and t.member == name and t.dest == U.guild then return t.source end
+        if ValidTicket(t) and t.member == name and t.dest == U.guild
+            and (t.state == "accepted" or t.state == "ready") then return t.source end
     end
 end
 local function FreshRemoteRoster(guild)
@@ -100,7 +101,8 @@ function U.TransferMessage(kind, f, sender, remote)
     elseif kind == "READY" then
         if #f ~= 2 then return false end
         local t = tickets[f[1]]
-        if not ValidTicket(t) or t.dest ~= U.guild or f[2] ~= t.member or sender ~= t.member then return false end
+        if not ValidTicket(t) or t.dest ~= U.guild or f[2] ~= t.member or sender ~= t.member
+            or (t.state ~= "accepted" and t.state ~= "ready") then return false end
         local changed = t.state ~= "ready"
         t.state = "ready"
         if changed and U.CanInvite() then U.Notify(U.SafeDisplay(t.member) .. " сообщает о выходе. Можно отправить приглашение: /cz → Переходы.") end

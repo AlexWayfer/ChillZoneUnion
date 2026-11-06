@@ -24,3 +24,7 @@ Bundled third-party libraries retain their own licenses:
 LibStub: public domain (original header in Libs/LibStub.lua).
 LibDeflate: zlib License; copyright 2018-2020 Haoqian He
 (full original notice in Libs/LibDeflate.lua).
+
+The bundled LibDeflate copy contains ChillZoneUnion modifications (2026):
+private addon instance and bounded decompression. Modified source is marked;
+the original zlib license and copyright notice remain in that file.

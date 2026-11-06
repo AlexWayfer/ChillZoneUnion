@@ -81,6 +81,10 @@ licenses shall be comply when used.
 	Project Version: 1.0.2-release
 --]]
 
+-- ChillZoneUnion modified fork (2026-11-06): private addon instance and
+-- bounded raw-DEFLATE decoding. Original authorship and license above apply.
+-- The bounded API rejects before an output write would exceed its byte cap.
+local addonName, addonPrivate = ...
 local LibDeflate
 
 do
@@ -110,7 +114,11 @@ do
 	.." Licensed under the zlib License"
 
 	-- Register in the World of Warcraft library "LibStub" if detected.
-	if LibStub then
+	if addonName == "ChillZoneUnion" and type(addonPrivate) == "table" then
+		-- Never reuse or replace another addon's shared, possibly unbounded decoder.
+		LibDeflate = {}
+		addonPrivate.Deflate = LibDeflate
+	elseif LibStub then
 		local lib, minor = LibStub:GetLibrary(_MAJOR, true)
 		if lib and minor and minor >= _MINOR then -- No need to update.
 			return lib
@@ -2251,7 +2259,7 @@ end
 -- @param dictionary The preset dictionary. nil if not provided.
 --		This dictionary should be produced by LibDeflate:CreateDictionary(str)
 -- @return The decomrpess state.
-local function CreateDecompressState(str, dictionary)
+local function CreateDecompressState(str, dictionary, max_output)
 	local ReadBits, ReadBytes, Decode, ReaderBitlenLeft
 		, SkipToByteBoundary = CreateReader(str)
 	local state =
@@ -2265,6 +2273,8 @@ local function CreateDecompressState(str, dictionary)
 		buffer = {},
 		result_buffer = {},
 		dictionary = dictionary,
+		max_output = max_output,
+		output_size = 0,
 	}
 	return state
 end
@@ -2338,6 +2348,7 @@ local function DecodeUntilEndOfBlock(state, lcodes_huffman_bitlens
 		state.buffer, state.buffer_size, state.ReadBits, state.Decode
 		, state.ReaderBitlenLeft, state.result_buffer
 	local dictionary = state.dictionary
+	local max_output, output_size = state.max_output, state.output_size
 	local dict_string_table
 	local dict_strlen
 
@@ -2361,6 +2372,8 @@ local function DecodeUntilEndOfBlock(state, lcodes_huffman_bitlens
 		-- invalid literal/length or distance code in fixed or dynamic block
 			return -10
 		elseif symbol < 256 then -- Literal
+			if max_output and output_size + 1 > max_output then return -18 end
+			output_size = output_size + 1
 			buffer_size = buffer_size + 1
 			buffer[buffer_size] = _byte_to_char[symbol]
 		elseif symbol > 256 then -- Length code
@@ -2385,6 +2398,8 @@ local function DecodeUntilEndOfBlock(state, lcodes_huffman_bitlens
 			-- distance is too far back in fixed or dynamic block
 				return -11
 			end
+			if max_output and output_size + bitlen > max_output then return -18 end
+			output_size = output_size + bitlen
 			if char_buffer_index >= -257 then
 				for _=1, bitlen do
 					buffer_size = buffer_size + 1
@@ -2420,6 +2435,7 @@ local function DecodeUntilEndOfBlock(state, lcodes_huffman_bitlens
 	until symbol == 256
 
 	state.buffer_size = buffer_size
+	state.output_size = output_size
 
 	return 0
 end
@@ -2452,6 +2468,7 @@ local function DecompressStoreBlock(state)
 	end
 
 	-- Note that ReadBytes will skip to the next byte boundary first.
+	if state.max_output and state.output_size + bytelen > state.max_output then return -18 end
 	buffer_size = ReadBytes(bytelen, buffer, buffer_size)
 	if buffer_size < 0 then
 		return 2 -- available inflate data did not terminate
@@ -2467,6 +2484,7 @@ local function DecompressStoreBlock(state)
 		buffer[buffer_size+1] = nil
 	end
 	state.buffer_size = buffer_size
+	state.output_size = state.output_size + bytelen
 	return 0
 end
 
@@ -2624,6 +2642,7 @@ local function Inflate(state)
 		end
 	end
 
+	if state.max_output and state.output_size > state.max_output then return nil, -18 end
 	state.result_buffer[#state.result_buffer+1] =
 		table_concat(state.buffer, "", 1, state.buffer_size)
 	local result = table_concat(state.result_buffer)
@@ -2632,8 +2651,8 @@ end
 
 -- @see LibDeflate:DecompressDeflate(str)
 -- @see LibDeflate:DecompressDeflateWithDict(str, dictionary)
-local function DecompressDeflateInternal(str, dictionary)
-	local state = CreateDecompressState(str, dictionary)
+local function DecompressDeflateInternal(str, dictionary, max_output)
+	local state = CreateDecompressState(str, dictionary, max_output)
 	local result, status = Inflate(state)
 	if not result then
 		return nil, status
@@ -2736,6 +2755,17 @@ function LibDeflate:DecompressDeflate(str)
 			..arg_err), 2)
 	end
 	return DecompressDeflateInternal(str)
+end
+
+-- ChillZoneUnion extension: the byte cap is enforced while inflating, not
+-- after allocating the result. -18 means invalid cap or output limit reached.
+-- The private protocol never accepts a cap above its 25,000-byte message limit.
+function LibDeflate:DecompressDeflateLimited(str, max_output)
+	if type(str) ~= "string" or type(max_output) ~= "number"
+		or max_output < 0 or max_output > 25000 or max_output % 1 ~= 0 then
+		return nil, -18
+	end
+	return DecompressDeflateInternal(str, nil, max_output)
 end
 
 --- Decompress a raw deflate compressed data with a preset dictionary.

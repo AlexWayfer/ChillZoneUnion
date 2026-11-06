@@ -1,6 +1,6 @@
 local _, U = ...
 ChillZoneUnion = U
-U.VERSION, U.PREFIX = "0.4.6-beta", "CZUnion1"
+U.VERSION, U.PREFIX = "0.5.0-beta", "CZUnion2"
 U.GUILDS = { "Чиллзон", "Чиллзон Навсегда" }
 U.GUILD_LEADERS = { [1] = "Вован Дубан" }
 U.UNION_LEADER = "Вован Дубан"
@@ -175,6 +175,13 @@ function U.Command(input)
     cmd = cmd:lower()
     if cmd == "" or cmd == "ui" then U.Toggle()
     elseif cmd == "link" then U.Link(rest)
+    elseif cmd == "accept" then U.AcceptLink(U.Name(rest))
+    elseif cmd == "decline" then U.DeclineLink(U.Name(rest))
+    elseif cmd == "relay" then
+        local mode, name = rest:match("^(%S+)%s+(.+)$")
+        if (mode ~= "on" and mode ~= "off") or not U.Name(name) then U.Print("/cz relay on|off Полное Имя") return end
+        U.AuthorizeRelay(name, mode == "on")
+    elseif cmd == "trust" and rest == "sync" then U.ShareTrust()
     elseif cmd == "sync" then U.RequestRoster(); U.snapshotDue = 0; U.SayHello(); U.Print("Обновление состава запрошено.")
     elseif cmd == "status" then U.Print(U.Status())
     elseif cmd == "badge" then
@@ -188,6 +195,7 @@ function U.Command(input)
         U.db.bridgeGuildChat = rest == "on"
         U.Print("Передача вашего гильдейского чата: " .. (U.db.bridgeGuildChat and "включена" or "выключена"))
     elseif cmd == "help" then
+        U.Print("/cz accept Полное Имя; /cz decline Полное Имя; /cz relay on|off Полное Имя; /cz trust sync — передать подтверждённые настройки.")
         U.Print("/cz — окно; /czu текст — общий чат; /cz link Имя Фамилия — связать гильдии; /cz sync; /cz status; /cz guildchat on|off.")
     else U.SendChat(input) end
 end
@@ -213,6 +221,14 @@ f:SetScript("OnEvent", function(_, event, ...)
         local key = realm .. ":" .. faction
         db.realms[key] = db.realms[key] or {}
         U.db = db.realms[key]
+        if U.db.trustSchema ~= 2 then
+            local hadSavedState = next(U.db.contacts or {}) ~= nil or next(U.db.rosters or {}) ~= nil
+            U.db.contacts, U.db.rosters, U.db.approvedRelays = {}, {}, {}
+            U.db.tickets, U.db.announcement, U.db.addonPresence = {}, nil, {}
+            U.db.setupContact, U.db.setupIntroSeen = nil, {}
+            U.db.trustSchema = 2
+            U.trustMigrated = hadSavedState
+        end
         U.db.contacts = U.db.contacts or {}
         U.db.rosters = U.db.rosters or {}
         if U.db.bridgeGuildChat == nil then U.db.bridgeGuildChat = true end
@@ -232,6 +248,10 @@ f:SetScript("OnEvent", function(_, event, ...)
     if not U.db then return end
     if event == "PLAYER_LOGIN" then
         U.UpdateIdentity(); U.RequestRoster(); U.SayHello()
+        if U.trustMigrated then
+            U.Print("Проверка безопасности: старые контакты и данные соединения сброшены. Настройте связь заново с подтверждением второй стороны.")
+            U.trustMigrated = nil
+        end
     elseif event == "PLAYER_GUILD_UPDATE" then U.UpdateIdentity(); U.RequestRoster()
     end
     for _, fn in ipairs(U.events[event] or {}) do fn(...) end
